@@ -1,4 +1,5 @@
 // Copyright © 2015 Steve Francia <spf@spf13.com>.
+// Copyright © 2015 Marcelo E. Magallon <marcelo.magallon@gmail.com>.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
 //   you may not use this file except in compliance with the License.
@@ -166,4 +167,139 @@ func PrintMaze(m MazeI) {
 		}
 		fmt.Println(str)
 	}
+}
+
+// PrintPrettyMaze prints the maze in a pretty format, which makes
+// debugging build issues so much easier. Courtesy of Kim Eik
+// (https://gist.github.com/netbrain/63ad3c3743d5ca5e9869)
+func PrintPrettyMaze(m MazeI) {
+	out := ""
+	str := make([][]string, m.Height()*3)
+	for i := 0; i < m.Height(); i++ {
+		str[i*3] = make([]string, m.Width()*3)
+		str[i*3+1] = make([]string, m.Width()*3)
+		str[i*3+2] = make([]string, m.Width()*3)
+		for j := 0; j < m.Width(); j++ {
+			room, _ := m.GetRoom(j, i)
+			str[i*3][j*3] = "▛"
+			str[i*3][j*3+1] = " "
+			str[i*3][j*3+2] = "▜"
+			str[i*3+2][j*3] = "▙"
+			str[i*3+2][j*3+1] = " "
+			str[i*3+2][j*3+2] = "▟"
+			str[i*3+1][j*3] = " "
+			str[i*3+1][j*3+2] = " "
+			str[i*3+1][j*3+1] = " "
+
+			if room.Walls.Top {
+				str[i*3][j*3+1] = "▀"
+			}
+
+			if room.Walls.Bottom {
+				str[i*3+2][j*3+1] = "▄"
+			}
+
+			if room.Walls.Left {
+				str[i*3+1][j*3] = "▌"
+			}
+
+			if room.Walls.Right {
+				str[i*3+1][j*3+2] = "▐"
+			}
+
+			if room.Visited {
+				str[i*3+1][j*3+1] = "·"
+			}
+
+			if room.Treasure {
+				str[i*3+1][j*3+1] = "×"
+			} else if room.Start {
+				str[i*3+1][j*3+1] = "⚑"
+			}
+
+			x, y := m.Icarus()
+			if x == j && y == i {
+				str[i*3+1][j*3+1] = "☉"
+			}
+
+		}
+	}
+
+	for x := 0; x < len(str); x++ {
+		for y := 0; y < len(str[x]); y++ {
+			out += str[x][y]
+		}
+		out += "\n"
+	}
+
+	fmt.Println(out)
+}
+
+// Delta returns the required displacement in order to go in direction
+// dir
+func Delta(dir int) (dx, dy int) {
+	switch dir {
+	case E:
+		dx = 1
+	case W:
+		dx = -1
+	case N:
+		dy = -1
+	case S:
+		dy = 1
+	}
+
+	return dx, dy
+}
+
+// Shift takes input coordinates (x, y) and returns displaced
+// coordinates in direction dir
+func Shift(x, y, dir int) (int, int) {
+	dx, dy := Delta(dir)
+	return x + dx, y + dy
+}
+
+// Reverse returns the reverse direction of dir
+func Reverse(dir int) (r int) {
+	switch dir {
+	case E:
+		r = W
+	case W:
+		r = E
+	case N:
+		r = S
+	case S:
+		r = N
+	}
+
+	return r
+}
+
+// Valid returns true if the positon (x, y) is valid for a maze of size w×h
+func Valid(x, y, w, h int) bool {
+	return x >= 0 && x < w && y >= 0 && y < h
+}
+
+// RmWall removes wall in direction dir from room at position (x, y) in
+// maze m. It makes it easier to deal with the fact that all internal
+// walls must be double-sized.
+func RmWall(m MazeI, x, y, dir int) {
+	room, _ := m.GetRoom(x, y)
+	room.RmWall(dir)
+
+	x, y = Shift(x, y, dir)
+	room, _ = m.GetRoom(x, y)
+	room.RmWall(Reverse(dir))
+}
+
+// AddWall adds wall in direction dir in room at position (x, y) in maze
+// m. It makes it easier to deal with the fact that all internal walls
+// must be double-sized.
+func AddWall(m MazeI, x, y, dir int) {
+	room, _ := m.GetRoom(x, y)
+	room.AddWall(dir)
+
+	x, y = Shift(x, y, dir)
+	room, _ = m.GetRoom(x, y)
+	room.AddWall(Reverse(dir))
 }

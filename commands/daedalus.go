@@ -1,4 +1,5 @@
 // Copyright © 2015 Steve Francia <spf@spf13.com>.
+// Copyright © 2015 Marcelo E. Magallon <marcelo.magallon@gmail.com>.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
 //   you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -25,7 +27,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golangchallenge/gc6/mazelib"
+	"github.com/mem/labyrinth/mazelib"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -110,7 +112,11 @@ func GetStartingPoint(c *gin.Context) {
 		fmt.Println(err)
 		os.Exit(-1)
 	}
-	mazelib.PrintMaze(currentMaze)
+	if viper.GetBool("pretty") {
+		mazelib.PrintPrettyMaze(currentMaze)
+	} else {
+		mazelib.PrintMaze(currentMaze)
+	}
 
 	c.JSON(http.StatusOK, mazelib.Reply{Survey: startRoom})
 }
@@ -356,14 +362,297 @@ func fullMaze() *Maze {
 	return z
 }
 
-// TODO: Write your maze creator function here
+type mazeBuilder func() *Maze
+
+var tracker struct {
+	scorecard   []int
+	lastBuilder int
+	builders    []mazeBuilder
+}
+
+// pickBuilder will keep tabs on the client's progress with each kind of
+// maze and randomly select one with a bias towards the kind of maze
+// that the client seems to have the most difficulty with.  All the ugly
+// details are kept inside the function.
+func pickBuilder() mazeBuilder {
+	if tracker.scorecard == nil {
+		tracker.builders = []mazeBuilder{
+			createEmptyMaze,
+			createSimpleMaze,
+			createRingMaze,
+			createBtreeMaze,
+			createTreeMaze,
+		}
+		tracker.scorecard = make([]int, len(tracker.builders))
+	}
+
+	// fmt.Println(tracker.scorecard)
+
+	if len(scores) > 0 {
+		tracker.scorecard[tracker.lastBuilder] += scores[len(scores)-1]
+	}
+
+	lim := int(math.Sqrt(float64(viper.GetInt("times"))))
+	if s := len(tracker.builders) * len(tracker.builders); lim < s {
+		lim = s
+	}
+
+	if len(scores) < lim {
+		tracker.lastBuilder = (tracker.lastBuilder + 1) % len(tracker.builders)
+	} else {
+		total := 0
+		for _, v := range tracker.scorecard {
+			total += v
+		}
+		n := rand.Intn(total)
+		total = 0
+		for i, v := range tracker.scorecard {
+			total += v
+			if n < total {
+				tracker.lastBuilder = i
+				break
+			}
+		}
+	}
+
+	return tracker.builders[tracker.lastBuilder]
+}
+
+// createMaze creates a maze ready to be used by the client
 func createMaze() *Maze {
+	builder := pickBuilder()
 
-	// TODO: Fill in the maze:
-	// You need to insert a startingPoint for Icarus
-	// You need to insert an EndingPoint (treasure) for Icarus
-	// You need to Add and Remove walls as needed.
-	// Use the mazelib.AddWall & mazelib.RmWall to do this
+	m := builder()
+	placeObjects(m)
+	return m
+}
 
-	return emptyMaze()
+// placeObjects places Icarus and the treasure in the maze, taking care
+// to not put Icarus and the treasure in the same location.
+func placeObjects(m *Maze) {
+	w, h := m.Width(), m.Height()
+	sx, sy := rand.Intn(w), rand.Intn(h)
+	m.SetStartPoint(sx, sy)
+	tx, ty := rand.Intn(w), rand.Intn(h)
+	// Don't put stuff on top of each other
+	if tx == sy && ty == sy {
+		if tx > 0 {
+			tx--
+		} else {
+			tx++
+		}
+		if ty > 0 {
+			ty--
+		} else {
+			ty++
+		}
+	}
+	m.SetTreasure(tx, ty)
+}
+
+// addExternalWalls adds the external walls to maze m, in order to make
+// sure that whatever the output of the maze builders, it conforms to
+// the requirements of an enclosed maze.
+func addExternalWalls(m *Maze) {
+	w, h := m.Width(), m.Height()
+
+	for x := 0; x < w; x++ {
+		r, _ := m.GetRoom(x, 0)
+		r.AddWall(mazelib.N)
+		r, _ = m.GetRoom(x, h-1)
+		r.AddWall(mazelib.S)
+	}
+
+	for y := 0; y < h; y++ {
+		r, _ := m.GetRoom(0, y)
+		r.AddWall(mazelib.W)
+		r, _ = m.GetRoom(w-1, y)
+		r.AddWall(mazelib.E)
+	}
+}
+
+// createEmptyMaze creates a maze without any walls inside. Wall-hughing
+// algorithms have a problem with this.
+func createEmptyMaze() *Maze {
+	m := emptyMaze()
+	addExternalWalls(m)
+
+	return m
+}
+
+// createSimpleMaze creates a simple maze, topologically it's a straight
+// line. Depending on the relative location of Icarus and the treasure,
+// and the bias of the solving algorithm, this might cause it to take
+// ~2*N steps where N is the number of rooms in the maze.
+func createSimpleMaze() *Maze {
+	m := emptyMaze()
+	w, h := m.Width(), m.Height()
+
+	for y := 0; y < h-1; y++ {
+		s, e := 0, w
+		if y%2 == 0 {
+			e--
+		} else {
+			s++
+		}
+
+		for x := s; x < e; x++ {
+			mazelib.AddWall(m, x, y, mazelib.S)
+		}
+	}
+
+	addExternalWalls(m)
+
+	return m
+}
+
+// createRingMaze creates a maze of concentric rings. Since the rings
+// are disconnected, this will give wall-hughing algorithms some grief.
+// If the maze is large enough (100 rooms), the builder will sacrifice
+// some walls for larger groups of fully connected rooms, which cause
+// some implementations of backtracking algorithms to visit many rooms.
+func createRingMaze() *Maze {
+	m := emptyMaze()
+	w, h := m.Width(), m.Height()
+	step := 1
+	// Give backtracking algorithms a hard time by creating regions
+	// with lots of options
+	if w*h >= 100 {
+		step = 2
+	}
+
+	for y := step; y < h/2+1; y += step {
+		// build a a ring
+		for x := y; x < w-y; x++ {
+			// top wall
+			mazelib.AddWall(m, x, y, mazelib.N)
+			// bottom wall
+			mazelib.AddWall(m, x, h-y-1, mazelib.S)
+		}
+
+		for j := y; j < h-y; j++ {
+			// left wall
+			mazelib.AddWall(m, y, j, mazelib.W)
+			// right wall
+			mazelib.AddWall(m, w-y-1, j, mazelib.E)
+		}
+
+		// Put connecting doors on opposing sides of the
+		// labyrinth in order to force walking all around to get
+		// to the next door.
+		if (y/step)%2 == 0 {
+			mazelib.RmWall(m, y, y, mazelib.W)
+		} else {
+			mazelib.RmWall(m, w-y-1, h-y-1, mazelib.E)
+		}
+	}
+
+	addExternalWalls(m)
+
+	return m
+}
+
+// createBtreeMaze creates maze with rooms connected to two other rooms.
+// Topologically the resulting maze is a tree, which guarantees that the
+// maze is perfect. There's always a large hallway to the west and the
+// north since most people have a tendency to prefer positive numbers,
+// and these directions require substracting.
+func createBtreeMaze() *Maze {
+	m := fullMaze()
+	w, h := m.Width(), m.Height()
+
+	dirs := make([]int, 0, 2)
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dirs = dirs[:0]
+
+			if y != 0 {
+				// we can go north
+				dirs = append(dirs, mazelib.N)
+			}
+
+			if x != 0 {
+				// we can go west
+				dirs = append(dirs, mazelib.W)
+			}
+
+			if len(dirs) > 0 {
+				// pick a random direction to go to out
+				// of the valid ones and make a passage
+				// to it
+				dir := dirs[rand.Intn(len(dirs))]
+				mazelib.RmWall(m, x, y, dir)
+			}
+		}
+	}
+
+	addExternalWalls(m)
+
+	return m
+}
+
+// createTreeMaze creates maze with rooms connected in such a way that
+// topologically the resulting maze is a tree, which guarantees that the
+// maze is perfect. The maze is as random as it gets, and backtrackers
+// will probably excel here, and wall-hughers will always find a
+// solution.
+func createTreeMaze() *Maze {
+	m := fullMaze()
+	w, h := m.Width(), m.Height()
+
+	// keep a list of the next rooms where we will be adding
+	// passages, add a random room to start with
+	c := []pos{{rand.Intn(w), rand.Intn(h)}}
+
+	// keep track of all the rooms we have already visited while
+	// building the maze
+	visited := make([][]bool, w)
+	for i := 0; i < w; i++ {
+		visited[i] = make([]bool, h)
+	}
+
+	// take note of the unvisited neighbors for the current room
+	neighbors := make([]int, 0, 4)
+
+	for len(c) > 0 {
+		// visit the most recently added room
+		t := c[len(c)-1]
+		// and remove it from the list right now
+		c = c[:len(c)-1]
+		// remember that we will have visited this room (hello, Doctor)
+		visited[t.x][t.y] = true
+
+		neighbors = neighbors[:0]
+
+		// check the neighbors in each direction and add them to
+		// the list of unvisited ones if necessary
+		for _, dir := range []int{mazelib.N, mazelib.E, mazelib.S, mazelib.W} {
+			x, y := mazelib.Shift(t.x, t.y, dir)
+			if mazelib.Valid(x, y, w, h) && !visited[x][y] {
+				neighbors = append(neighbors, dir)
+			}
+		}
+
+		if len(neighbors) > 0 {
+			// pick a random unvisited neighbor out of the valid ones
+			dir := neighbors[rand.Intn(len(neighbors))]
+
+			// make a passage to that neighbor
+			mazelib.RmWall(m, t.x, t.y, dir)
+
+			// since we found a neighbor, return this room
+			// to the list
+			c = append(c, t)
+
+			// append the neighbor room to the list that we
+			// will be visiting in the future
+			x, y := mazelib.Shift(t.x, t.y, dir)
+			// appending ensures that this will be the next
+			// visited room
+			c = append(c, pos{x, y})
+		}
+	}
+
+	return m
 }

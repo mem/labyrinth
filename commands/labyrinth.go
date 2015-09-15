@@ -28,9 +28,10 @@ import (
 	"github.com/spf13/viper"
 )
 
-// TODO: Your name here
-var AuthorName = ""
+// The author's name
+var AuthorName = "Marcelo Magallon"
 
+// The name of the configuration file
 var CfgFile string
 
 // Defining the daedalus command.
@@ -73,6 +74,7 @@ func init() {
 	RootCmd.PersistentFlags().IntP("height", "y", 10, "height of the laybrinth") // 'h' is used for help already
 	RootCmd.PersistentFlags().IntP("times", "t", 1, "times to solve the laybrinth")
 	RootCmd.PersistentFlags().IntP("max-steps", "m", 500, "Maximum steps before giving up")
+	RootCmd.PersistentFlags().BoolP("pretty", "r", false, "Pretty print mazes")
 
 	// Bind viper to these flags so viper can read flag values along with config, env, etc.
 	viper.BindPFlag("width", RootCmd.PersistentFlags().Lookup("width"))
@@ -80,6 +82,7 @@ func init() {
 	viper.BindPFlag("port", RootCmd.PersistentFlags().Lookup("port"))
 	viper.BindPFlag("times", RootCmd.PersistentFlags().Lookup("times"))
 	viper.BindPFlag("max-steps", RootCmd.PersistentFlags().Lookup("max-steps"))
+	viper.BindPFlag("pretty", RootCmd.PersistentFlags().Lookup("pretty"))
 }
 
 // Read in config file and ENV variables if set.

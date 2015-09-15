@@ -1,4 +1,5 @@
 // Copyright © 2015 Steve Francia <spf@spf13.com>.
+// Copyright © 2015 Marcelo E. Magallon <marcelo.magallon@gmail.com>.
 //
 //   Licensed under the Apache License, Version 2.0 (the "License");
 //   you may not use this file except in compliance with the License.
@@ -22,7 +23,7 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/golangchallenge/gc6/mazelib"
+	"github.com/mem/labyrinth/mazelib"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -82,16 +83,35 @@ func Move(direction string) (mazelib.Survey, error) {
 		}
 
 		rep := ToReply(contents)
-		if rep.Victory == true {
+		switch {
+		case rep.Victory == true:
 			fmt.Println(rep.Message)
 			// os.Exit(1)
 			return rep.Survey, mazelib.ErrVictory
-		} else {
+		case rep.Error == true:
 			return rep.Survey, errors.New(rep.Message)
+		default:
+			return rep.Survey, nil
 		}
 	}
 
 	return mazelib.Survey{}, errors.New("invalid direction")
+}
+
+// UndoMove tells the server to move Icarus in the opposite direction of
+// `direction` to support backing off.
+func UndoMove(direction string) (mazelib.Survey, error) {
+	switch direction {
+	case "left":
+		direction = "right"
+	case "right":
+		direction = "left"
+	case "up":
+		direction = "down"
+	case "down":
+		direction = "up"
+	}
+	return Move(direction)
 }
 
 // utility function to wrap making requests to the daedalus server
@@ -115,12 +135,94 @@ func ToReply(in []byte) mazelib.Reply {
 	return *res
 }
 
-// TODO: This is where you work your magic
 func solveMaze() {
-	_ = awake() // Need to start with waking up to initialize a new maze
-	// You'll probably want to set this to a named value and start by figuring
-	// out which step to take next
+	s := awake() // Need to start with waking up to initialize a new maze
 
-	//TODO: Write your solver algorithm here
+	RecursiveSolve(s)
+}
 
+type pos struct {
+	x, y int
+}
+
+// RecursiveSolver solves mazes recursively, implementing a backtracking
+// strategy
+type RecursiveSolver struct {
+	visited map[pos]bool
+}
+
+// RecursiveSolve creates a RecursiveSolver and solves the maze,
+// returning true if a solution was found
+func RecursiveSolve(s mazelib.Survey) bool {
+	return NewRecursiveSolver().solve(s, pos{})
+}
+
+// NewRecursiveSolver creates a new recursive solver
+func NewRecursiveSolver() *RecursiveSolver {
+	return &RecursiveSolver{
+		visited: make(map[pos]bool),
+	}
+}
+
+// solve solves the maze by keeping track of the visited rooms and
+// exploring all the reachable rooms until a solution is found or no
+// more options are available. It has a right and bottom bias.
+func (solver *RecursiveSolver) solve(s mazelib.Survey, p pos) bool {
+	solver.visited[p] = true
+	if s.Right == false && solver.right(p) {
+		return true
+	}
+	if s.Bottom == false && solver.down(p) {
+		return true
+	}
+	if s.Left == false && solver.left(p) {
+		return true
+	}
+	if s.Top == false && solver.up(p) {
+		return true
+	}
+	return false
+}
+
+// right moves Icarus east
+func (solver *RecursiveSolver) right(p pos) bool {
+	x, y := mazelib.Shift(p.x, p.y, mazelib.E)
+	return solver.visit("right", pos{x, y})
+}
+
+// down moves Icarus south
+func (solver *RecursiveSolver) down(p pos) bool {
+	x, y := mazelib.Shift(p.x, p.y, mazelib.S)
+	return solver.visit("down", pos{x, y})
+}
+
+// left moves Icarus west
+func (solver *RecursiveSolver) left(p pos) bool {
+	x, y := mazelib.Shift(p.x, p.y, mazelib.W)
+	return solver.visit("left", pos{x, y})
+}
+
+// up moves Icarus north
+func (solver *RecursiveSolver) up(p pos) bool {
+	x, y := mazelib.Shift(p.x, p.y, mazelib.N)
+	return solver.visit("up", pos{x, y})
+}
+
+// visit is the common method all the movements use to tell the server
+// the direction we want to move, call solve on the new position, and
+// back off if that move didn't find a solution.
+func (solver *RecursiveSolver) visit(dir string, p pos) bool {
+	if solver.visited[p] {
+		return false
+	}
+	switch t, err := Move(dir); err {
+	case nil:
+		if solver.solve(t, p) {
+			return true
+		}
+		UndoMove(dir)
+	case mazelib.ErrVictory:
+		return true
+	}
+	return false
 }
